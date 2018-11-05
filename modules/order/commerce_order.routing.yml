@@ -6,6 +6,15 @@ commerce_order.configuration:
   requirements:
     _permission: 'access commerce administration pages'
 
+commerce_order.order_item_widget_autocomplete:
+      path: '/commerce_order/orderItemAutoCompleteHandler/{entity_type}/{view_mode}/{count}'
+      defaults:
+        _controller: '\Drupal\commerce_order\Controller\OrderItemAutoComplete::orderItemAutoCompleteHandler'
+        _format: json
+        _title: 'Order Item Autocomplete'
+      requirements:
+        _permission: 'access content'
+
 entity.commerce_order.add_page:
   path: '/admin/commerce/orders/add'
   defaults:
