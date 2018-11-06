@@ -2,7 +2,6 @@
 
 namespace Drupal\commerce_order\Controller;
 
-use Drupal\commerce_product\Entity\ProductVariation;
 use Drupal\search_api\Entity\Index;
 
 use Drupal\Core\Controller\ControllerBase;
@@ -10,6 +9,7 @@ use Drupal\Core\Entity\EntityTypeManagerInterface;
 use Drupal\Core\Messenger\MessengerInterface;
 use Drupal\Core\Render\RendererInterface;
 
+use Drupal\search_api\ParseMode\ParseModePluginManager;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\DependencyInjection\ContainerInterface;
@@ -43,6 +43,13 @@ class OrderItemAutoComplete extends ControllerBase {
   protected $messenger;
 
   /**
+   * The parse mode manager.
+   *
+   * @var \Drupal\search_api\ParseMode\ParseModePluginManager|null
+   */
+  protected $parseModeManager;
+
+  /**
    * Constructs a new OrderItemAutoComplete object.
    *
    * @param \Drupal\Core\Entity\EntityTypeManagerInterface $entity_type_manager
@@ -51,15 +58,19 @@ class OrderItemAutoComplete extends ControllerBase {
    *   The renderer interface.
    * @param \Drupal\Core\Messenger\MessengerInterface $messenger
    *   The messenger.
+   * @param \Drupal\search_api\ParseMode\ParseModePluginManager $parse_mode_manager
+   *   The parse mode manager.
    */
   public function __construct(
     EntityTypeManagerInterface $entity_type_manager,
     RendererInterface $renderer,
-    MessengerInterface $messenger
+    MessengerInterface $messenger,
+    ParseModePluginManager $parse_mode_manager
   ) {
     $this->entityTypeManager = $entity_type_manager;
     $this->renderer = $renderer;
     $this->messenger = $messenger;
+    $this->parseModeManager = $parse_mode_manager;
   }
 
   /**
@@ -69,7 +80,8 @@ class OrderItemAutoComplete extends ControllerBase {
     return new static(
       $container->get('entity_type.manager'),
       $container->get('renderer'),
-      $container->get('messenger')
+      $container->get('messenger'),
+      $container->get('plugin.manager.search_api.parse_mode')
     );
   }
 
@@ -97,7 +109,10 @@ class OrderItemAutoComplete extends ControllerBase {
       foreach ($suggestions->getResultItems() as $item) {
         $data = explode(':', $item->getId());
         $data = explode('/', $data[1]);
-        $product_variation = ProductVariation::load($data[1]);
+        $product_variation = $this
+          ->entityTypeManager
+          ->getStorage('commerce_product_variation')
+          ->load($data[1]);
         $product_render_array = $view_builder->view($product_variation, $view_mode, $product_variation->language()->getId());
         $results[] = [
           'value' => $product_variation->id(),
@@ -121,7 +136,7 @@ class OrderItemAutoComplete extends ControllerBase {
    *   The query search result.
    */
   public function searchQueryString($string, $count) {
-    $config = $this->config('commerce_order.settings');
+    $config = $this->config('commerce_order_item_widget.settings');
 
     $index = Index::load($config->get('product_search_index'));
 
@@ -136,8 +151,7 @@ class OrderItemAutoComplete extends ControllerBase {
 
     $query = $index->query();
 
-    $parse_mode = \Drupal::service('plugin.manager.search_api.parse_mode')
-      ->createInstance('direct');
+    $parse_mode = $this->parseModeManager->createInstance('direct');
     $parse_mode->setConjunction('OR');
     $query->setParseMode($parse_mode);
 

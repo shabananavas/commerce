@@ -1,10 +1,11 @@
 <?php
 
-namespace Drupal\commerce\Plugin\Field\FieldWidget;
+namespace Drupal\commerce_order\Plugin\Field\FieldWidget;
 
+use CommerceGuys\Intl\Formatter\CurrencyFormatterInterface;
 use Drupal\commerce_order\Entity\OrderItem;
 use Drupal\commerce_price\Price;
-use Drupal\commerce_product\Entity\ProductVariation;
+
 use Drupal\Component\Utility\Html;
 use Drupal\Core\Entity\EntityDisplayRepositoryInterface;
 use Drupal\Core\Entity\EntityTypeManagerInterface;
@@ -14,6 +15,9 @@ use Drupal\Core\Field\WidgetBase;
 use Drupal\Core\Field\WidgetInterface;
 use Drupal\Core\Form\FormStateInterface;
 use Drupal\Core\Plugin\ContainerFactoryPluginInterface;
+use Drupal\Core\Render\RendererInterface;
+use Drupal\Core\Session\AccountInterface;
+
 use Symfony\Component\DependencyInjection\ContainerInterface;
 use Symfony\Component\Validator\ConstraintViolationInterface;
 
@@ -22,7 +26,7 @@ use Symfony\Component\Validator\ConstraintViolationInterface;
  *
  * @FieldWidget(
  *   id = "commerce_order_item_widget",
- *   label = @Translation("Commerce Order item widget"),
+ *   label = @Translation("Commerce order item widget"),
  *   field_types = {
  *     "entity_reference"
  *   },
@@ -46,6 +50,27 @@ class OrderItemWidget extends WidgetBase implements WidgetInterface, ContainerFa
   protected $entityDisplayRepository;
 
   /**
+   * The current user.
+   *
+   * @var \Drupal\Core\Session\AccountInterface
+   */
+  protected $currentUser;
+
+  /**
+   * The currency formatter.
+   *
+   * @var \CommerceGuys\Intl\Formatter\CurrencyFormatterInterface
+   */
+  protected $currencyFormatter;
+
+  /**
+   * The renderer.
+   *
+   * @var \Drupal\Core\Render\RendererInterface
+   */
+  protected $renderer;
+
+  /**
    * Constructs a EntityReferenceEntityFormatter instance.
    *
    * @param string $plugin_id
@@ -60,13 +85,39 @@ class OrderItemWidget extends WidgetBase implements WidgetInterface, ContainerFa
    *   Any third party settings settings.
    * @param \Drupal\Core\Entity\EntityTypeManagerInterface $entity_type_manager
    *   The entity type manager.
+   * @param \Drupal\Core\Session\AccountInterface $current_user
+   *   The current user.
+   * @param \CommerceGuys\Intl\Formatter\CurrencyFormatterInterface $currency_formatter
+   *   The currency formatter.
+   * @param \Drupal\Core\Render\RendererInterface $renderer
+   *   The renderer.
    * @param \Drupal\Core\Entity\EntityDisplayRepositoryInterface $entity_display_repository
    *   The entity display repository.
    */
-  public function __construct($plugin_id, $plugin_definition, FieldDefinitionInterface $field_definition, array $settings, array $third_party_settings, EntityTypeManagerInterface $entity_type_manager, EntityDisplayRepositoryInterface $entity_display_repository) {
-    parent::__construct($plugin_id, $plugin_definition, $field_definition, $settings, $third_party_settings);
+  public function __construct(
+    $plugin_id,
+    $plugin_definition,
+    FieldDefinitionInterface $field_definition,
+    array $settings,
+    array $third_party_settings,
+    EntityTypeManagerInterface $entity_type_manager,
+    AccountInterface $current_user,
+    CurrencyFormatterInterface $currency_formatter,
+    RendererInterface $renderer,
+    EntityDisplayRepositoryInterface $entity_display_repository
+  ) {
+    parent::__construct(
+      $plugin_id,
+      $plugin_definition,
+      $field_definition,
+      $settings,
+      $third_party_settings
+    );
 
     $this->entityTypeManager = $entity_type_manager;
+    $this->currentUser = $current_user;
+    $this->currencyFormatter = $currency_formatter;
+    $this->renderer = $renderer;
     $this->entityDisplayRepository = $entity_display_repository;
   }
 
@@ -81,6 +132,9 @@ class OrderItemWidget extends WidgetBase implements WidgetInterface, ContainerFa
       $configuration['settings'],
       $configuration['third_party_settings'],
       $container->get('entity_type.manager'),
+      $container->get('current_user'),
+      $container->get('commerce_price.currency_formatter'),
+      $container->get('renderer'),
       $container->get('entity_display.repository')
     );
   }
@@ -91,7 +145,7 @@ class OrderItemWidget extends WidgetBase implements WidgetInterface, ContainerFa
   public static function defaultSettings() {
     return [
       'size' => 60,
-      'placeholder' => 'Scan or enter product name or SKU',
+      'placeholder' => 'Enter product name or SKU',
       'num_results' => 10,
       'purchasable_entity_view_mode' => 'commerce_product_select',
       'allow_decimal' => TRUE,
@@ -126,6 +180,7 @@ class OrderItemWidget extends WidgetBase implements WidgetInterface, ContainerFa
       '#min' => 1,
       '#max' => 50,
     ];
+
     $elements['purchasable_entity_view_mode'] = [
       '#type' => 'select',
       '#title' => $this->t('Purchasable entity view mode'),
@@ -196,23 +251,15 @@ class OrderItemWidget extends WidgetBase implements WidgetInterface, ContainerFa
    * {@inheritdoc}
    */
   public function formElement(FieldItemListInterface $items, $delta, array $element, array &$form, FormStateInterface $form_state) {
-    // Determine which step we're in.
-    $this->is_edit_order = $form_state->get('is_edit_order');
-    // Determine the initial items on the order.
-    $this->initial_items_on_order = $form_state->get('initial_items_on_order');
-    // Set the order_has_return_item flag to FALSE initially. We might need
-    // this flag in the future to structure the form differently.
-    $form_state->set('order_has_return_items', FALSE);
-
     if ($form_state->getTriggeringElement()) {
       $this->processFormSubmission($items, $form, $form_state);
     }
     $element = [
-        '#type' => 'fieldset',
-        '#tree' => TRUE,
-        '#description' => $this->fieldDefinition->getDescription(),
-        '#field_title' => $this->fieldDefinition->getLabel(),
-      ] + $element;
+      '#type' => 'fieldset',
+      '#tree' => TRUE,
+      '#description' => $this->fieldDefinition->getDescription(),
+      '#field_title' => $this->fieldDefinition->getLabel(),
+    ] + $element;
 
     // Make a wrapper for the entire form.
     // @todo this feels off. There must be a better way.
@@ -225,13 +272,14 @@ class OrderItemWidget extends WidgetBase implements WidgetInterface, ContainerFa
       $wrapper_id = $form_state->wrapper_id;
     }
 
+
     $element['product_selector'] = [
       '#type' => 'textfield',
       '#size' => $this->getSetting('size'),
       '#placeholder' => $this->getSetting('placeholder'),
       '#maxlength' => $this->getFieldSetting('max_length'),
       '#default_value' => NULL,
-      '#autocomplete_route_name' => 'commerce_order.commerce_order_item_widget_autocomplete',
+      '#autocomplete_route_name' => 'commerce_order.order_item_widget.autocomplete',
       '#autocomplete_route_parameters' => [
         // @todo use the "Purchasable entity type" from the order type.
         'entity_type' => 'commerce_product_variation',
@@ -254,7 +302,6 @@ class OrderItemWidget extends WidgetBase implements WidgetInterface, ContainerFa
         $this->t('Unit price'),
         $this->t('Quantity'),
         $this->t('Action'),
-        $this->t('Return'),
       ],
     ];
 
@@ -262,12 +309,6 @@ class OrderItemWidget extends WidgetBase implements WidgetInterface, ContainerFa
     foreach ($referenced_entities as $entity) {
       $item_form = $this->orderItemForm($entity, $wrapper_id);
       array_unshift($element['order_items'], $item_form);
-
-      // Save in the form_state that we have a return item on this order, if the
-      // order item is a 'return' type.
-      if ($entity->type->getValue()[0]['target_id'] == 'return') {
-        $form_state->set('order_has_return_items', TRUE);
-      }
     }
 
     $element['#default_value'] = $items->referencedEntities();
@@ -286,7 +327,6 @@ class OrderItemWidget extends WidgetBase implements WidgetInterface, ContainerFa
    *   The oprder item form.
    */
   protected function orderItemForm(OrderItem $order_item, $wrapper_id) {
-    $user = \Drupal::currentUser();
     $product = $order_item->getPurchasedEntity();
 
     // Determine if the quantity field should accept decimals.
@@ -307,13 +347,12 @@ class OrderItemWidget extends WidgetBase implements WidgetInterface, ContainerFa
     $view_builder = $this->entityTypeManager->getViewBuilder($order_item->getEntityTypeId());
     $product_render = $view_builder->view($product, $this->getSetting('purchasable_entity_view_mode'), $order_item->language()
       ->getId());
-    $currency_formatter = \Drupal::service('commerce_price.currency_formatter');
     $unit_price = $order_item->getUnitPrice();
 
     $form = [
       'purchasable_entity' => [
         '#type' => 'markup',
-        '#markup' => \Drupal::service('renderer')->render($product_render),
+        '#markup' => $this->renderer->render($product_render),
       ],
       'unit_price' => [
         'unit_price' => [
@@ -324,7 +363,7 @@ class OrderItemWidget extends WidgetBase implements WidgetInterface, ContainerFa
           '#default_value' => $unit_price->toArray(),
           '#allow_negative' => TRUE,
           '#order_item_id' => $order_item->id(),
-          '#disabled' => !$user->hasPermission('alter product unit price') ? TRUE : FALSE,
+          '#disabled' => !$this->currentUser->hasPermission('alter product unit price') ? TRUE : FALSE,
           '#ajax' => [
             'callback' => [$this, 'ajaxRefresh'],
             'wrapper' => $wrapper_id,
@@ -336,14 +375,14 @@ class OrderItemWidget extends WidgetBase implements WidgetInterface, ContainerFa
         ],
         'unit_price_hidden' => [
           '#type' => 'hidden',
-          '#value' => $currency_formatter->format($unit_price->getNumber(), $unit_price->getCurrencyCode()),
+          '#value' => $this->currencyFormatter->format($unit_price->getNumber(), $unit_price->getCurrencyCode()),
           '#attributes' => [
             'class' => 'commerce-order-customer-display-unit-price-hidden',
           ],
         ],
         'item_total_price_hidden' => [
           '#type' => 'hidden',
-          '#value' => $currency_formatter->format($order_item->getTotalPrice()->getNumber(), $order_item->getTotalPrice()->getCurrencyCode()),
+          '#value' => $this->currencyFormatter->format($order_item->getTotalPrice()->getNumber(), $order_item->getTotalPrice()->getCurrencyCode()),
           '#attributes' => [
             'class' => 'commerce-order-customer-display-item-total-price-hidden',
           ],
@@ -394,56 +433,6 @@ class OrderItemWidget extends WidgetBase implements WidgetInterface, ContainerFa
       ],
     ];
 
-    // If we're adding a new order item, add a checkbox to toggle the item
-    // as a return item, if it's not already a return item.
-    $initial_items_on_order = $this->initial_items_on_order;
-    $order_item_newly_added = !isset($initial_items_on_order[$order_item->id()]) ? TRUE : FALSE;
-    $is_return_for_order_item = $order_item->getData('return_for_order_item');
-
-    if (!$is_return_for_order_item && $order_item_newly_added) {
-      $form['set_order_item_as_return'] = [
-        '#type' => 'checkbox',
-        '#name' => 'set_order_item_as_return_' . $order_item->id(),
-        '#title' => $this->t('Set as return item'),
-        '#ajax' => [
-          'callback' => [$this, 'ajaxRefresh'],
-          'wrapper' => $wrapper_id,
-          'progress' => [
-            'message' => '',
-          ],
-        ],
-        '#order_item_id' => $order_item->id(),
-        '#default_value' => $order_item->type->getValue()[0]['target_id'] == 'return' ? TRUE : FALSE,
-        '#limit_validation_errors' => [],
-      ];
-    }
-    // If we're editing an order, add a 'return' button next to
-    // each item.
-    elseif ($this->is_edit_order && $order_item->type->getValue()[0]['target_id'] != 'return') {
-      $form['return_order_item'] = [
-        '#type' => 'button',
-        '#name' => 'return_order_item_' . $order_item->id(),
-        '#value' => $this->t('Return'),
-        '#ajax' => [
-          'callback' => [$this, 'ajaxRefresh'],
-          'wrapper' => $wrapper_id,
-          'progress' => [
-            'message' => '',
-          ],
-        ],
-        '#order_item_id' => $order_item->id(),
-        '#limit_validation_errors' => [],
-      ];
-    }
-    // Else, we just add an empty row so the rows don't look ugly when the
-    // return buttons are missing.
-    else {
-      $form['empty_row'] = [
-        '#type' => 'item',
-        '#markup' => '',
-      ];
-    }
-
     return $form;
   }
 
@@ -473,12 +462,6 @@ class OrderItemWidget extends WidgetBase implements WidgetInterface, ContainerFa
     }
     elseif (strpos($trigger_element['#name'], 'remove_order_item_') === 0) {
       $order = $this->removeOrderItem($items, $form, $form_state);
-    }
-    elseif (strpos($trigger_element['#name'], 'return_order_item_') === 0) {
-      $order = $this->returnOrderItem($items, $form, $form_state);
-    }
-    elseif (strpos($trigger_element['#name'], 'set_order_item_as_return_') === 0) {
-      $order = $this->toggleOrderItemAsReturn($items, $form, $form_state);
     }
     elseif (preg_match('/^order_items\[target_id\]\[order_items\]\[([0-9])*\]\[unit_price\]\[unit_price\]\[number\]$/', $trigger_element['#name'])) {
       $order = $this->updateUnitPrice($items, $form, $form_state);
@@ -515,7 +498,10 @@ class OrderItemWidget extends WidgetBase implements WidgetInterface, ContainerFa
    */
   protected function updateQuantity(FieldItemListInterface $items, array &$form, FormStateInterface &$form_state) {
     $trigger_element = $form_state->getTriggeringElement();
-    $order_item = OrderItem::load($trigger_element['#order_item_id']);
+    $order_item = $this
+      ->entityTypeManager
+      ->getStorage('commerce_order_item')
+      ->load($trigger_element['#order_item_id']);
     $value_key = $trigger_element['#parents'];
     $new_quantity = $form_state->getValue($value_key);
     if (!$this->getSetting('allow_decimal')) {
@@ -549,102 +535,15 @@ class OrderItemWidget extends WidgetBase implements WidgetInterface, ContainerFa
    */
   protected function removeOrderItem(FieldItemListInterface $items, array &$form, FormStateInterface &$form_state) {
     $trigger_element = $form_state->getTriggeringElement();
-    $order_item = OrderItem::load($trigger_element['#order_item_id']);
+    $order_item = $this
+      ->entityTypeManager
+      ->getStorage('commerce_order_item')
+      ->load($trigger_element['#order_item_id']);
 
     /** @var \Drupal\commerce_order\Entity\Order $order */
     $order = $form_state->getFormObject()->getEntity();
     $order->removeItem($order_item);
     $order_item->delete();
-    return $order;
-  }
-
-  /**
-   * Creates a return order item.
-   *
-   * @param \Drupal\Core\Field\FieldItemListInterface $items
-   *   Values for this field.
-   * @param array $form
-   *   The form array.
-   * @param \Drupal\Core\Form\FormStateInterface $form_state
-   *   The form state.
-   *
-   * @return \Drupal\commerce_order\Entity\Order
-   *   The updated commerce order.
-   */
-  protected function returnOrderItem(FieldItemListInterface $items, array &$form, FormStateInterface &$form_state) {
-    $trigger_element = $form_state->getTriggeringElement();
-
-    /** @var \Drupal\commerce_order\Entity\OrderItem $new_order_item */
-    $order_item = OrderItem::load($trigger_element['#order_item_id']);
-
-    /** @var \Drupal\commerce_order\Entity\Order $order */
-    $order = $form_state->getFormObject()->getEntity();
-
-    // Loading the product variation object.
-    $product_variation = ProductVariation::load($order_item->getPurchasedEntityId());
-
-    // If we've not loaded a product variation then exit doing nothing.
-    if (!$product_variation) {
-      // There's nothing to do.
-      return FALSE;
-    }
-
-    // Create new order Item for adding into existing order.
-    $new_order_item = OrderItem::create([
-      'type' => 'return',
-      'title' => $product_variation->label(),
-      'purchased_entity' => $product_variation,
-      'quantity' => 1,
-      'data' => [
-        'return_for_order_item' => $order_item->id(),
-      ],
-    ]);
-    $price = new Price('-' . $product_variation->get('price')->number, $order_item->getUnitPrice()->getCurrencyCode());
-    $new_order_item->setUnitPrice($price, TRUE)->save();
-
-    // Add the new item into the order.
-    $order->addItem($new_order_item);
-    return $order;
-  }
-
-  /**
-   * Toggles an order item as a return item.
-   *
-   * @param \Drupal\Core\Field\FieldItemListInterface $items
-   *   Values for this field.
-   * @param array $form
-   *   The form array.
-   * @param \Drupal\Core\Form\FormStateInterface $form_state
-   *   The form state.
-   *
-   * @return \Drupal\commerce_order\Entity\Order
-   *   The updated commerce order.
-   */
-  protected function toggleOrderItemAsReturn(FieldItemListInterface $items, array &$form, FormStateInterface &$form_state) {
-    $trigger_element = $form_state->getTriggeringElement();
-
-    /** @var \Drupal\commerce_order\Entity\OrderItem $new_order_item */
-    $order_item = OrderItem::load($trigger_element['#order_item_id']);
-
-    /** @var \Drupal\commerce_order\Entity\Order $order */
-    $order = $form_state->getFormObject()->getEntity();
-
-    // Toggles the order item as a return item and change the unit price to a
-    // negative price.
-    // If it is already a return item, set it as a default order item.
-    if ($order_item->type->getValue()[0]['target_id'] == 'return') {
-      $new_price = abs($order_item->getUnitPrice()->getNumber());
-      $order_item->set('type', 'default');
-      $order_item->setUnitPrice(new Price("$new_price", $order_item->getUnitPrice()
-        ->getCurrencyCode()), TRUE)->save();
-    }
-    // Else, we set the order item as a return item.
-    else {
-      $order_item->set('type', 'return');
-      $order_item->setUnitPrice(new Price('-' . $order_item->getUnitPrice()
-          ->getNumber(), $order_item->getUnitPrice()->getCurrencyCode()), TRUE)
-        ->save();
-    }
     return $order;
   }
 
@@ -667,14 +566,20 @@ class OrderItemWidget extends WidgetBase implements WidgetInterface, ContainerFa
     array_pop($value_key);
     $value = $form_state->getValue($value_key);
     // Get the order id from the parent.
-    $order_item = OrderItem::load($items->get($value_key[3])
-      ->getValue()['target_id']);
+    $order_item = $this
+      ->entityTypeManager
+      ->getStorage('commerce_order_item')
+      ->load($items->get($value_key[3])
+        ->getValue()['target_id']);
     /** @var \Drupal\commerce_order\Entity\Order $order */
     $order = $form_state->getFormObject()->getEntity();
 
     $order_item_id = $form_state->getCompleteForm()['order_items']['widget']['target_id']['order_items'][$value_key[3]]['unit_price']['unit_price']['#order_item_id'];
 
-    $order_item = OrderItem::load($order_item_id);
+    $order_item = $this
+      ->entityTypeManager
+      ->getStorage('commerce_order_item')
+      ->load($order_item_id);
 
     $order_item
       ->setUnitPrice(new Price($value['number'], $value['currency_code']), TRUE)
@@ -698,22 +603,25 @@ class OrderItemWidget extends WidgetBase implements WidgetInterface, ContainerFa
    */
   protected function addOrderItem(FieldItemListInterface $items, array &$form, FormStateInterface &$form_state) {
     // Loading the product variation object.
-    $product_variation = ProductVariation::load($form_state->getValue([
-      'order_items',
-      'target_id',
-      'product_selector',
-    ]));
+    $product_variation = $this
+      ->entityTypeManager
+      ->getStorage('commerce_product_variation')
+      ->load($form_state->getValue([
+        'order_items',
+        'target_id',
+        'product_selector',
+      ]));
 
     if (!$product_variation) {
       $variation = \Drupal::entityQuery('commerce_product_variation')
-        ->condition('field_upc', $form_state->getValue([
-          'order_items', 'target_id', 'product_selector',
-        ]))
         ->range(0, 1)
         ->execute();
 
       if ($variation) {
-        $product_variation = ProductVariation::load(reset($variation));
+        $product_variation = $this
+          ->entityTypeManager
+          ->getStorage('commerce_product_variation')
+          ->load(reset($variation));
       }
     }
 
@@ -729,7 +637,7 @@ class OrderItemWidget extends WidgetBase implements WidgetInterface, ContainerFa
     /** @var \Drupal\commerce_order\Entity\OrderItem $order_item */
     foreach ($order->getItems() as $order_item) {
       if ($order_item->getPurchasedEntity()
-          ->id() === $product_variation->id() && $order_item->type->getValue()[0]['target_id'] == 'default'
+        ->id() === $product_variation->id() && $order_item->type->getValue()[0]['target_id'] == 'default'
       ) {
         $create_new_order_item = FALSE;
         $order_item
@@ -740,13 +648,16 @@ class OrderItemWidget extends WidgetBase implements WidgetInterface, ContainerFa
     }
     if ($create_new_order_item) {
       // Create new order Item for adding into existing order.
-      $order_item = OrderItem::create([
-        'type' => 'default',
-        'title' => $product_variation->label(),
-        'purchased_entity' => $product_variation,
-        'quantity' => 1,
-        'unit_price' => $product_variation->getPrice(),
-      ]);
+      $order_item = $this
+        ->entityTypeManager
+        ->getStorage('commerce_order_item')
+        ->create([
+          'type' => 'default',
+          'title' => $product_variation->label(),
+          'purchased_entity' => $product_variation,
+          'quantity' => 1,
+          'unit_price' => $product_variation->getPrice(),
+        ]);
       $order_item->save();
 
       // Adding the item into the Order.
