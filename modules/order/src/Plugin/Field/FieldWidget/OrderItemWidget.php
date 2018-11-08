@@ -362,16 +362,7 @@ class OrderItemWidget extends WidgetBase implements WidgetInterface, ContainerFa
           '#name' => 'update_unit_price_' . $product->id(),
           '#default_value' => $unit_price->toArray(),
           '#allow_negative' => TRUE,
-          '#order_item_id' => $order_item->id(),
           '#disabled' => !$this->currentUser->hasPermission('alter product unit price') ? TRUE : FALSE,
-          '#ajax' => [
-            'callback' => [$this, 'ajaxRefresh'],
-            'wrapper' => $wrapper_id,
-            'event' => 'change',
-            'progress' => [
-              'message' => '',
-            ],
-          ],
         ],
         'unit_price_hidden' => [
           '#type' => 'hidden',
@@ -402,15 +393,6 @@ class OrderItemWidget extends WidgetBase implements WidgetInterface, ContainerFa
               'commerce-order-order-item-quantity',
             ],
           ],
-          '#ajax' => [
-            'callback' => [$this, 'ajaxRefresh'],
-            'wrapper' => $wrapper_id,
-            'event' => 'change',
-            'progress' => [
-              'message' => '',
-            ],
-          ],
-          '#order_item_id' => $order_item->id(),
         ],
         'quantity_hidden' => [
           '#type' => 'hidden',
@@ -470,12 +452,6 @@ class OrderItemWidget extends WidgetBase implements WidgetInterface, ContainerFa
       $order = $this->updateQuantity($items, $form, $form_state);
     }
     if ($order) {
-      // Update the draft order with the changes.
-      $order->recalculateTotalPrice()->save();
-      // Update the order on the form.
-      $form_object = $form_state->getFormObject();
-      $form_object->setEntity($order);
-
       // Remove the user input as we no longer need it.
       $user_input = $form_state->getUserInput();
       unset($user_input['order_items']);
