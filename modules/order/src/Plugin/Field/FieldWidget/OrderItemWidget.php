@@ -362,7 +362,16 @@ class OrderItemWidget extends WidgetBase implements WidgetInterface, ContainerFa
           '#name' => 'update_unit_price_' . $product->id(),
           '#default_value' => $unit_price->toArray(),
           '#allow_negative' => TRUE,
+          '#order_item_id' => $order_item->id(),
           '#disabled' => !$this->currentUser->hasPermission('alter product unit price') ? TRUE : FALSE,
+          '#ajax' => [
+            'callback' => [$this, 'ajaxRefresh'],
+            'wrapper' => $wrapper_id,
+            'event' => 'change',
+            'progress' => [
+              'message' => '',
+            ],
+          ],
         ],
         'unit_price_hidden' => [
           '#type' => 'hidden',
@@ -393,6 +402,15 @@ class OrderItemWidget extends WidgetBase implements WidgetInterface, ContainerFa
               'commerce-order-order-item-quantity',
             ],
           ],
+          '#ajax' => [
+            'callback' => [$this, 'ajaxRefresh'],
+            'wrapper' => $wrapper_id,
+            'event' => 'change',
+            'progress' => [
+              'message' => '',
+            ],
+          ],
+          '#order_item_id' => $order_item->id(),
         ],
         'quantity_hidden' => [
           '#type' => 'hidden',
@@ -445,12 +463,55 @@ class OrderItemWidget extends WidgetBase implements WidgetInterface, ContainerFa
     elseif (strpos($trigger_element['#name'], 'remove_order_item_') === 0) {
       $order = $this->removeOrderItem($items, $form, $form_state);
     }
+    elseif (preg_match('/^order_items\[target_id\]\[order_items\]\[([0-9])*\]\[unit_price\]\[unit_price\]\[number\]$/', $trigger_element['#name'])) {
+      $order = $this->updateUnitPrice($items, $form, $form_state);
+    }
+    elseif (preg_match('/^order_items\[target_id\]\[order_items\]\[([0-9])*\]\[quantity\]\[quantity\]$/', $trigger_element['#name'])) {
+      $order = $this->updateQuantity($items, $form, $form_state);
+    }
     if ($order) {
       // Remove the user input as we no longer need it.
       $user_input = $form_state->getUserInput();
       unset($user_input['order_items']);
       $form_state->setUserInput($user_input);
     }
+  }
+
+  /**
+   * Updates an order item quantity from form field.
+   *
+   * @param \Drupal\Core\Field\FieldItemListInterface $items
+   *   Values for this field.
+   * @param array $form
+   *   The form array.
+   * @param \Drupal\Core\Form\FormStateInterface $form_state
+   *   The form state.
+   *
+   * @return \Drupal\commerce_order\Entity\Order
+   *   The updated commerce order.
+   */
+  protected function updateQuantity(FieldItemListInterface $items, array &$form, FormStateInterface &$form_state) {
+    $trigger_element = $form_state->getTriggeringElement();
+    $order_item = $this
+      ->entityTypeManager
+      ->getStorage('commerce_order_item')
+      ->load($trigger_element['#order_item_id']);
+    $value_key = $trigger_element['#parents'];
+    $new_quantity = $form_state->getValue($value_key);
+    if (!$this->getSetting('allow_decimal')) {
+      $new_quantity = round($new_quantity, 0);
+    }
+    /** @var \Drupal\commerce_order\Entity\Order $order */
+    $order = $form_state->getFormObject()->getEntity();
+    if ($new_quantity > 0) {
+      $order_item->setQuantity($new_quantity);
+      $order_item->save();
+    }
+    else {
+      $order->removeItem($order_item);
+      $order_item->delete();
+    }
+    return $order;
   }
 
   /**
@@ -477,6 +538,47 @@ class OrderItemWidget extends WidgetBase implements WidgetInterface, ContainerFa
     $order = $form_state->getFormObject()->getEntity();
     $order->removeItem($order_item);
     $order_item->delete();
+    return $order;
+  }
+
+  /**
+   * Updates the unit price for an order item.
+   *
+   * @param \Drupal\Core\Field\FieldItemListInterface $items
+   *   Values for this field.
+   * @param array $form
+   *   The form array.
+   * @param \Drupal\Core\Form\FormStateInterface $form_state
+   *   The form state.
+   *
+   * @return \Drupal\commerce_order\Entity\Order
+   *   The updated commerce order.
+   */
+  protected function updateUnitPrice(FieldItemListInterface $items, array &$form, FormStateInterface &$form_state) {
+    $trigger_element = $form_state->getTriggeringElement();
+    $value_key = $trigger_element['#parents'];
+    array_pop($value_key);
+    $value = $form_state->getValue($value_key);
+    // Get the order id from the parent.
+    $order_item = $this
+      ->entityTypeManager
+      ->getStorage('commerce_order_item')
+      ->load($items->get($value_key[3])
+        ->getValue()['target_id']);
+    /** @var \Drupal\commerce_order\Entity\Order $order */
+    $order = $form_state->getFormObject()->getEntity();
+
+    $order_item_id = $form_state->getCompleteForm()['order_items']['widget']['target_id']['order_items'][$value_key[3]]['unit_price']['unit_price']['#order_item_id'];
+
+    $order_item = $this
+      ->entityTypeManager
+      ->getStorage('commerce_order_item')
+      ->load($order_item_id);
+
+    $order_item
+      ->setUnitPrice(new Price($value['number'], $value['currency_code']), TRUE)
+      ->save();
+
     return $order;
   }
 
