@@ -2,6 +2,7 @@
 
 namespace Drupal\commerce_payment\PluginForm;
 
+use Drupal\commerce_order\Entity\OrderType;
 use Drupal\commerce_payment\CreditCard;
 use Drupal\commerce_payment\Exception\DeclineException;
 use Drupal\commerce_payment\Exception\PaymentGatewayException;
