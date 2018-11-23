@@ -205,8 +205,7 @@ class MultipleProfileTypesConfirmForm extends ConfirmFormBase {
     // Now create the profile type.
     foreach ($profile_types as $id => $profile_type) {
       $this->createProfileType([$id => $profile_type], $customer_profile_type, $extra_fields_to_add);
-      $this->createProfileViewDisplayModes([$id => $profile_type], $customer_profile_type, $extra_fields_to_add);
-      $this->createProfileFormDisplayModes([$id => $profile_type], $customer_profile_type, $extra_fields_to_add);
+      $this->createProfileDisplayModes([$id => $profile_type]);
     }
   }
 
@@ -252,144 +251,68 @@ class MultipleProfileTypesConfirmForm extends ConfirmFormBase {
    *
    * @param array $profile_type
    *   The profile type to add, keyed on the profile type ID.
-   * @param \Drupal\profile\Entity\ProfileTypeInterface $customer_profile_type
-   *   The customer profile type.
-   * @param array $extra_fields_to_add
-   *   An array of field definitions to add to the new profile type.
    */
-  protected function createProfileViewDisplayModes(
-    array $profile_type,
-    ProfileTypeInterface $customer_profile_type,
-    array $extra_fields_to_add
-  ) {
+  protected function createProfileDisplayModes(array $profile_type) {
     $bundle = key($profile_type);
     $entity_type = 'profile';
 
-    // Fetch all the view display modes the 'customer' profile type has.
-    $entity_view_display_modes = $this
-      ->entityTypeManager
-      ->getStorage('entity_view_display')
-      ->loadByProperties(
-        [
-          'targetEntityType' => $entity_type,
-          'bundle' => 'customer',
-        ]
-      );
+    $display_mode_types = [
+      'entity_view_display',
+      'entity_form_display',
+    ];
 
-    // Save each entity view display mode in our new profile type.
-    foreach ($entity_view_display_modes as $mode) {
-      /** @var \Drupal\Core\Entity\Entity\EntityViewDisplay $mode */
-      $view_mode = $mode->getMode();
-
-      // Create the new display mode in the new profile type, if it doesn't
-      // exist.
-      $new_entity_view_display = $this
+    foreach ($display_mode_types as $display_mode_type) {
+      // Fetch all the view display modes the 'customer' profile type has.
+      $entity_display_modes = $this
         ->entityTypeManager
-        ->getStorage('entity_view_display')
-        ->load($entity_type . '.' . $bundle . '.' . $view_mode);
-
-      if (empty($new_entity_view_display)) {
-        $values = array(
-          'targetEntityType' => $entity_type,
-          'bundle' => $bundle,
-          'mode' => $view_mode,
-          'status' => TRUE,
+        ->getStorage($display_mode_type)
+        ->loadByProperties(
+          [
+            'targetEntityType' => $entity_type,
+            'bundle' => OrderType::PROFILE_COMMON,
+          ]
         );
-        /** @var \Drupal\Core\Entity\Entity\EntityViewDisplay $new_entity_view_display */
-        $new_entity_view_display = $this
+
+      // Save each entity display mode in our new profile type.
+      foreach ($entity_display_modes as $mode) {
+        $view_mode = $mode->getMode();
+
+        // Create the new display mode in the new profile type, if it doesn't
+        // exist.
+        $new_entity_display = $this
           ->entityTypeManager
-          ->getStorage('entity_view_display')
-          ->create($values);
+          ->getStorage($display_mode_type)
+          ->load($entity_type . '.' . $bundle . '.' . $view_mode);
+
+        if (empty($new_entity_display)) {
+          $values = array(
+            'targetEntityType' => $entity_type,
+            'bundle' => $bundle,
+            'mode' => $view_mode,
+            'status' => TRUE,
+          );
+          $new_entity_display = $this
+            ->entityTypeManager
+            ->getStorage($display_mode_type)
+            ->create($values);
+        }
+
+        // Now, let's also copy the fields in the display mode.
+        $fields_to_copy = $mode->getComponents();
+        // Remove the components first, in case, it already has some fields as
+        // they might not be in the correct order as the original profile's.
+        foreach ($fields_to_copy as $key => $value) {
+          $new_entity_display->removeComponent($key, $value);
+        }
+
+        // Now, save the components in the correct order again.
+        foreach ($fields_to_copy as $key => $value) {
+          $new_entity_display->setComponent($key, $value);
+        }
+
+        // Finally, save the new display mode.
+        $new_entity_display->save();
       }
-
-      // Now, let's also copy the fields in the display mode.
-      $fields_to_copy = $mode->getComponents();
-      // Remove the components first, in case, it already has some fields as
-      // they might not be in the correct order as the original profile's.
-      foreach ($fields_to_copy as $key => $value) {
-        $new_entity_view_display->removeComponent($key, $value);
-      }
-
-      // Now, save the components in the correct order again.
-      foreach ($fields_to_copy as $key => $value) {
-        $new_entity_view_display->setComponent($key, $value);
-      }
-
-      // Finally, save the new display mode.
-      $new_entity_view_display->save();
-    }
-  }
-
-  /**
-   * Create the form display modes for the new profile type from the original.
-   *
-   * @param array $profile_type
-   *   The profile type to add, keyed on the profile type ID.
-   * @param \Drupal\profile\Entity\ProfileTypeInterface $customer_profile_type
-   *   The customer profile type.
-   * @param array $extra_fields_to_add
-   *   An array of field definitions to add to the new profile type.
-   */
-  protected function createProfileFormDisplayModes(
-    array $profile_type,
-    ProfileTypeInterface $customer_profile_type,
-    array $extra_fields_to_add
-  ) {
-    $bundle = key($profile_type);
-    $entity_type = 'profile';
-
-    // Fetch all the form display modes the 'customer' profile type has.
-    $entity_form_display_modes = $this
-      ->entityTypeManager
-      ->getStorage('entity_form_display')
-      ->loadByProperties(
-        [
-          'targetEntityType' => $entity_type,
-          'bundle' => 'customer',
-        ]
-      );
-
-    // Save each entity form display mode in our new profile type.
-    foreach ($entity_form_display_modes as $mode) {
-      /** @var \Drupal\Core\Entity\Entity\EntityFormDisplay $mode */
-      $view_mode = $mode->getMode();
-
-      // Create the new display mode in the new profile type, if it doesn't
-      // exist.
-      $new_entity_form_display = $this
-        ->entityTypeManager
-        ->getStorage('entity_form_display')
-        ->load($entity_type . '.' . $bundle . '.' . $view_mode);
-
-      if (empty($new_entity_form_display)) {
-        $values = [
-          'targetEntityType' => $entity_type,
-          'bundle' => $bundle,
-          'mode' => $view_mode,
-          'status' => TRUE,
-        ];
-        /** @var \Drupal\Core\Entity\Entity\EntityFormDisplay $new_entity_form_display */
-        $new_entity_form_display = $this
-          ->entityTypeManager
-          ->getStorage('entity_form_display')
-          ->create($values);
-      }
-
-      // Now, let's also copy the fields in the display mode.
-      $fields_to_copy = $mode->getComponents();
-      // Remove the components first, in case, it already has some fields as
-      // they might not be in the correct order as the original profile's.
-      foreach ($fields_to_copy as $key => $value) {
-        $new_entity_form_display->removeComponent($key, $value);
-      }
-
-      // Now, save the components in the correct order again.
-      foreach ($fields_to_copy as $key => $value) {
-        $new_entity_form_display->setComponent($key, $value);
-      }
-
-      // Finally, save the new display mode.
-      $new_entity_form_display->save();
     }
   }
 

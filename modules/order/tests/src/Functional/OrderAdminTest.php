@@ -168,7 +168,7 @@ class OrderAdminTest extends OrderBrowserTestBase {
     $customer = $this->drupalCreateUser();
     // The profile is not associated with the customer to avoid #2995300.
     $profile = Profile::create([
-      'type' => 'customer',
+      'type' => OrderType::PROFILE_COMMON,
       'address' => [
         'country_code' => 'US',
         'postal_code' => '53177',
